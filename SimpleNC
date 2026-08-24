@@ -1,0 +1,99 @@
+/// Get the product of elements in a tuple:
+function TupleProduct(G, t)
+	p:= Id(G);
+	for x in t do
+		p := p * x;
+	end for;
+	return p;
+end function;
+
+// Check if product is 1:
+function ProductOneCheck(G, t)
+    return TupleProduct(G, t) eq Id(G);
+end function;
+
+// Check if tuple is generating:
+function TupleGenerating(G, t)
+    return #sub< G | t > eq #G;
+end function;
+
+// Compute the total number of cycles of a permutation:
+function CycleCount(perm)
+    return &+[ n[2] : n in CycleStructure(perm) ];
+end function;
+
+// Compute genus of cover from tuple:
+function GenusOfCover(t)
+    n := Degree(Parent(t[1]));
+    sumofind := &+[ n - CycleCount(g) : g in t ]; // Summing ind(g_i) for each g_i in the tuple.
+    assert sumofind mod 2 eq 0; // Condition that tuple product is one forces this.
+    return 1 - n + (sumofind div 2); // Genus formula for cover.
+end function;
+
+// Main Function
+// Input: Group G, tuple = (c1,c2,c3,c4) of conjugacy class representatives
+// Output: Elements of the straight inner Nielsen class
+function Enumeration(G, tuple)
+class_map := ClassMap(G);
+c4_index := class_map(tuple[4]);
+c1 := tuple[1];
+c2 := tuple[2];
+c3 := tuple[3];
+H := Centralizer(G, c1);
+H2 := Centralizer(G, c2);
+H3 := Centralizer(G, c3);
+HgH2_reps := DoubleCosetRepresentatives(G, H, H2);
+
+// Enumerating x2
+admissiblex2 := [ G | ];
+for r in HgH2_reps do
+    x2 := c2^(r^-1);
+    Append(~admissiblex2, x2);
+end for;
+
+// Enumerating x3
+admissiblepairs := [ CartesianProduct([G, G]) | ];
+for x2 in admissiblex2 do
+    c1x2generates := TupleGenerating(G, [c1,x2]);
+    
+    K := Centralizer(H, x2);
+    p := c1*x2;
+    d := ClassRepresentative(G, p);
+
+    flag, h := IsConjugate(G, p, d);
+    L := Centralizer(G, d);
+
+    Kd := sub< L | [ k^h : k in Generators(K) ] >;
+
+    LgH3_reps := DoubleCosetRepresentatives(G, L, H3);
+
+    for g in LgH3_reps do
+        y := c3^(g^-1);
+        
+        if class_map((d*y)^-1) ne c4_index then
+            continue;
+        end if;
+        
+        S := Centralizer(L, y);
+
+        KdlS_reps, KdlS_sizes := DoubleCosetRepresentatives(L, Kd, S);
+
+        for r in KdlS_reps do
+            z := y^(r^-1);
+            x3 := z^(h^-1);
+            
+            // Check if tuple (g1,x2,x3) is generating by first checking if (g1,x2) is generating (might save calculations)
+            if c1x2generates then
+                Append(~admissiblepairs, < x2, x3 >);
+            else
+                gentest:= TupleGenerating(G, [c1,x2,x3]);
+                if gentest then
+                    Append(~admissiblepairs, < x2, x3 >);
+                end if;
+            end if;
+        end for;
+    end for;
+end for;
+
+return admissiblepairs;
+end function;
