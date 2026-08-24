@@ -1,0 +1,524 @@
+// Basic functions
+
+// Get the product of the entries of a tuple.
+function TupleProduct(G, t)
+    p := Id(G);
+    for x in t do
+        p := p*x;
+    end for;
+    return p;
+end function;
+
+// Check whether the tuple has product one.
+function ProductOneCheck(G, t)
+    return TupleProduct(G, t) eq Id(G);
+end function;
+
+// Check whether the entries generate G.
+function TupleGenerating(G, t)
+    return #sub< G | t > eq #G;
+end function;
+
+// Total number of cycles of a permutation.
+function CycleCount(perm)
+    return &+[ item[2] : item in CycleStructure(perm) ];
+end function;
+
+// Genus of the associated degree-n cover from the branch cycles.
+function GenusOfCover(t)
+    n := Degree(Parent(t[1]));
+    sumofind := &+[ n - CycleCount(g) : g in t ];
+    assert sumofind mod 2 eq 0;
+    return 1 - n + (sumofind div 2);
+end function;
+
+///////////////////////////////////////////////////////////////////////////
+// Output record
+///////////////////////////////////////////////////////////////////////////
+
+FP4NumberedTableRF := recformat<
+    G,
+    ClassReps,
+    Numbering,
+    StorageField,
+    ChunkSize,
+    X3Chunks,
+    X2Numbers,
+    Offsets,
+    StateCount,
+    X2PassportCount,
+    NonemptyX2Blocks,
+    ProductFibreCatalogues,
+    MaxBlockSize
+>;
+
+// Packed numbered storage
+
+procedure FP4NCAppendPacked(
+    ~chunks, Vchunk, F, chunk_size, ~length, value
+)
+    length +:= 1;
+
+    chunk_index := ((length - 1) div chunk_size) + 1;
+    position := ((length - 1) mod chunk_size) + 1;
+
+    if chunk_index gt #chunks then
+        Append(~chunks, Vchunk ! 0);
+    end if;
+
+    chunks[chunk_index][position] := F ! value;
+end procedure;
+
+function FP4NCGetPacked(chunks, chunk_size, index)
+    if index lt 1 then
+        error "FP4NCGetPacked: index must be positive";
+    end if;
+
+    chunk_index := ((index - 1) div chunk_size) + 1;
+    position := ((index - 1) mod chunk_size) + 1;
+
+    if chunk_index gt #chunks then
+        error "FP4NCGetPacked: index exceeds allocated storage";
+    end if;
+
+    return Integers() ! chunks[chunk_index][position];
+end function;
+
+
+// Main enumeration
+
+// Input:
+//   G          finite permutation group;
+//   tuple      [c1,c2,c3,c4], representatives of prescribed G-classes.
+//
+// Parameters:
+//   ChunkSize          number of stored x3 identifiers per packed chunk;
+//   ProgressInterval   print progress;
+//   VerifyStates       if true, independently verify product-one, class
+//                      membership, and generation for every retained state.
+//                      Keep false for large calculations.
+//
+// Output:
+//   A compact FP4NumberedTableRF record.  A state is represented by:
+//      - one x2 number attached to its block;
+//      - one packed x3 number attached to its global state ID.
+//
+// The actual tuple can be recovered with FP4NCStateTuple below.
+function EnumerateNC(
+    G, tuple :
+    ChunkSize := 250000,
+    ProgressInterval := 0,
+    VerifyStates := false
+)
+    if #tuple ne 4 then
+        error "Need four class representatives";
+    end if;
+
+    if ChunkSize le 0 then
+        error "ChunkSize must be positive";
+    end if;
+
+    // Build the BSGS before NumberingMap.  The numbering is exact, but it
+
+    BSGS(G);
+    numbering := NumberingMap(G);
+
+    // Fixed class data.
+
+    class_map := ClassMap(G);
+
+    c1 := G ! tuple[1];
+    c2 := G ! tuple[2];
+    c3 := G ! tuple[3];
+    c4 := G ! tuple[4];
+
+    c3_index := class_map(c3);
+    c4_index := class_map(c4);
+
+    H  := Centralizer(G, c1);
+    H2 := Centralizer(G, c2);
+    H3 := Centralizer(G, c3);
+
+    BSGS(H);
+    BSGS(H2);
+    BSGS(H3);
+
+    // Enumerating x2
+
+    HgH2_reps := DoubleCosetRepresentatives(G, H, H2);
+
+    x2_passport_numbers := [ Integers() | ];
+
+    for r in HgH2_reps do
+        x2 := c2^(r^-1);
+        Append(~x2_passport_numbers, numbering(x2));
+    end for;
+
+    Sort(~x2_passport_numbers);
+    x2_passport_count := #x2_passport_numbers;
+
+    // Distinct H\G/H2 double cosets must give distinct H-orbits on C2.
+    if x2_passport_count gt 1 then
+        for i in [2..x2_passport_count] do
+            assert x2_passport_numbers[i-1] ne x2_passport_numbers[i];
+        end for;
+    end if;
+
+    // The double-coset representatives are no longer needed.
+    delete HgH2_reps;
+
+    // Enumerating x3
+    //
+    // X2Numbers[b] is the x2 identifier of nonempty block b.
+    //
+    // Offsets has length #X2Numbers+1 and starts at 0.  The states in
+    // block b have global IDs
+    //
+    //          Offsets[b]+1, ..., Offsets[b+1].
+    //
+    // The x3 identifier of global state s is stored in the packed x3
+    // storage at position s.
+
+    storage_prime := NextPrime(#G + 1);
+    Fstore := GF(storage_prime);
+    Vchunk := VectorSpace(Fstore, ChunkSize);
+
+    x3_chunks := [];
+    x2_numbers := [ Integers() | ];
+    offsets := [ Integers() | 0 ];
+
+    total_states := 0;
+    max_block_size := 0;
+
+
+    // The fibre cache is indexed by the conjugacy-class number of p=c1*x2.
+    //
+    // Each cache value is the tuple
+    //
+    //      < d, L, valid_orbits >,
+    //
+    // where
+    //      d = stored representative of p^G,
+    //      L = C_G(d),
+    //      valid_orbits is a Magma list of pairs <numbering(y), S>,
+    //      one for every valid L-orbit in C3, with S=C_L(y).
+    //
+
+    fibre_cache := AssociativeArray(Integers());
+
+    printf "Enumerating numbered four-point inner Nielsen states...\n";
+    printf "X2 Options = %o\n", x2_passport_count;
+
+    // Main loop.
+
+    for x2_counter in [1..x2_passport_count] do
+        nx2 := x2_passport_numbers[x2_counter];
+        x2 := nx2 @@ numbering;
+
+        c1x2generates := TupleGenerating(G, [ c1, x2 ]);
+
+        K := Centralizer(H, x2);
+        BSGS(K);
+
+        // Partial product and its G-class.
+
+        p := c1*x2;
+        product_class_index := class_map(p);
+
+        if IsDefined(fibre_cache, product_class_index) then
+            fibre_data := fibre_cache[product_class_index];
+        else
+
+            // d is Magma's stored representative of the product class.
+            d := ClassRepresentative(G, product_class_index);
+
+            // Because d is the stored class representative, use the class
+            // centralizer.  Magma stores this centralizer with the class
+            // table for reuse.
+            L := ClassCentralizer(G, product_class_index);
+            BSGS(L);
+
+            // FIBRE DECOMPOSITION: L \ G / H3.
+            //
+            // A representative g gives y=c3^(g^-1).  Since L=C_G(d),
+            // membership of (d*y)^-1 in C4 is constant on the whole
+            // L-orbit.  Therefore we test only one y per L-orbit.
+
+            LgH3_reps := DoubleCosetRepresentatives(G, L, H3);
+            valid_orbits := [* *];
+
+            for g in LgH3_reps do
+                y := c3^(g^-1);
+
+                if class_map((d*y)^-1) eq c4_index then
+                    // S depends only on this coarse L-orbit, so cache it.
+                    S := Centralizer(L, y);
+                    BSGS(S);
+
+                    Append(~valid_orbits, < numbering(y), S >);
+                end if;
+            end for;
+
+            delete LgH3_reps;
+
+            fibre_data := < d, L, valid_orbits >;
+            fibre_cache[product_class_index] := fibre_data;
+        end if;
+
+        // Unpack the cached data.
+
+        d := fibre_data[1];
+        L := fibre_data[2];
+        valid_orbits := fibre_data[3];
+
+        // Transport p to d.
+
+        flag, h := IsConjugate(
+            G, p, d :
+            LeftSubgroup := K,
+            RightSubgroup := L
+        );
+
+        assert flag;
+        assert p^h eq d;
+
+        Kd := sub< L | [ k^h : k in Generators(K) ] >;
+        BSGS(Kd);
+
+        h_inverse := h^-1;
+        block_numbers := [ Integers() | ];
+
+        // Refine every valid L-orbit into Kd-orbits.
+
+        for orbit_data in valid_orbits do
+            ny := orbit_data[1];
+            S := orbit_data[2];
+
+            y := ny @@ numbering;
+
+            KdlS_reps := DoubleCosetRepresentatives(L, Kd, S);
+
+            for r in KdlS_reps do
+                z := y^(r^-1);
+
+                // Undo the transport p^h=d-
+
+                x3 := z^h_inverse;
+                keep := c1x2generates;
+
+                if not keep then
+                    keep := TupleGenerating(G, [ c1, x2, x3 ]);
+                end if;
+
+                if keep then
+                    nx3 := numbering(x3);
+                    Append(~block_numbers, nx3);
+
+                    // Optional expensive verification 
+
+                    if VerifyStates then
+                        x4 := (c1*x2*x3)^-1;
+                        assert class_map(x3) eq c3_index;
+                        assert class_map(x4) eq c4_index;
+                        assert ProductOneCheck(G, [ c1,x2,x3,x4 ]);
+                        assert TupleGenerating(G, [ c1,x2,x3 ]);
+                    end if;
+                end if;
+            end for;
+
+            delete KdlS_reps;
+        end for;
+
+        // Keep only nonempty x2 blocks. 
+
+        if #block_numbers gt 0 then
+            Sort(~block_numbers);
+
+            // Distinct double cosets should represent distinct K-orbits.
+			
+            if #block_numbers gt 1 then
+                for j in [2..#block_numbers] do
+                    assert block_numbers[j-1] ne block_numbers[j];
+                end for;
+            end if;
+
+            Append(~x2_numbers, nx2);
+
+            for nx3 in block_numbers do
+                FP4NCAppendPacked(
+                    ~x3_chunks, Vchunk, Fstore, ChunkSize,
+                    ~total_states, nx3
+                );
+            end for;
+
+            Append(~offsets, total_states);
+            max_block_size := Max(max_block_size, #block_numbers);
+        end if;
+
+        // Progress report
+
+        if ProgressInterval gt 0 and
+           x2_counter mod ProgressInterval eq 0 then
+            printf "X2=%o/%o, Elements Found=%o, Nonempty blocks=%o, Fibre catalogues=%o, Memory=%o MB\n",
+                x2_counter,
+                x2_passport_count,
+                total_states,
+                #x2_numbers,
+                #fibre_cache,
+                GetMemoryUsage() div 1048576;
+        end if;
+    end for;
+
+    // Final consistency checks
+
+    assert #offsets eq #x2_numbers + 1;
+    assert offsets[#offsets] eq total_states;
+
+    printf "Enumeration complete.\n \n";
+    printf "Straight inner Nielsen class size = %o\n", total_states;
+    // printf "Nonempty x2 blocks = %o\n", #x2_numbers;
+    // printf "Product-fibre catalogues = %o\n", #fibre_cache;
+
+    product_fibre_catalogues := #fibre_cache;
+    delete fibre_cache;
+
+    return rec< FP4NumberedTableRF |
+        G := G,
+        ClassReps := [ G | c1,c2,c3,c4 ],
+        Numbering := numbering,
+        StorageField := Fstore,
+        ChunkSize := ChunkSize,
+        X3Chunks := x3_chunks,
+        X2Numbers := x2_numbers,
+        Offsets := offsets,
+        StateCount := total_states,
+        X2PassportCount := x2_passport_count,
+        NonemptyX2Blocks := #x2_numbers,
+        ProductFibreCatalogues := product_fibre_catalogues,
+        MaxBlockSize := max_block_size
+    >;
+end function;
+
+///////////////////////////////////////////////////////////////////////////
+// State access helpers
+///////////////////////////////////////////////////////////////////////////
+
+// Find the x2-block containing a global state ID by binary search in the
+// cumulative offsets.
+function FP4NCStateBlock(table, state_id)
+    if state_id lt 1 or state_id gt table`StateCount then
+        error "FP4NCStateBlock: state ID out of range";
+    end if;
+
+    low := 1;
+    high := #table`X2Numbers;
+
+    while low le high do
+        middle := (low + high) div 2;
+
+        if state_id le table`Offsets[middle] then
+            high := middle - 1;
+        elif state_id gt table`Offsets[middle + 1] then
+            low := middle + 1;
+        else
+            return middle;
+        end if;
+    end while;
+
+    error "FP4NCStateBlock: inconsistent offset table";
+end function;
+
+// Recover the actual group elements x2,x3 for a global state ID.
+function FP4NCStatePair(table, state_id)
+    block := FP4NCStateBlock(table, state_id);
+    numbering := table`Numbering;
+
+    nx2 := table`X2Numbers[block];
+    nx3 := FP4NCGetPacked(
+        table`X3Chunks, table`ChunkSize, state_id
+    );
+
+    return nx2 @@ numbering, nx3 @@ numbering;
+end function;
+
+// Recover the complete normalized four-tuple.
+function FP4NCStateTuple(table, state_id)
+    x2, x3 := FP4NCStatePair(table, state_id);
+    c1 := table`ClassReps[1];
+    x4 := (c1*x2*x3)^-1;
+
+    return [ c1, x2, x3, x4 ];
+end function;
+
+///////////////////////////////////////////////////////////////////////////
+// Exact lookup helpers for later braid code
+///////////////////////////////////////////////////////////////////////////
+
+// Binary search an increasing integer sequence.  Return 0 if absent.
+function FP4NCFindSortedInteger(sequence, value)
+    low := 1;
+    high := #sequence;
+
+    while low le high do
+        middle := (low + high) div 2;
+
+        if sequence[middle] lt value then
+            low := middle + 1;
+        elif sequence[middle] gt value then
+            high := middle - 1;
+        else
+            return middle;
+        end if;
+    end while;
+
+    return 0;
+end function;
+
+// Find the block for an already-canonical x2 number.
+function FP4NCFindX2Block(table, nx2)
+    return FP4NCFindSortedInteger(table`X2Numbers, nx2);
+end function;
+
+// Find the global state ID for an already-canonical numbered pair.
+// This assumes the braid-stage canonicalizer returns exactly the same x2
+// and x3 orbit representatives as the enumeration.
+function FP4NCFindState(table, nx2, nx3)
+    block := FP4NCFindX2Block(table, nx2);
+
+    if block eq 0 then
+        error "FP4NCFindState: x2 block is absent";
+    end if;
+
+    low := table`Offsets[block] + 1;
+    high := table`Offsets[block + 1];
+
+    while low le high do
+        middle := (low + high) div 2;
+        value := FP4NCGetPacked(
+            table`X3Chunks, table`ChunkSize, middle
+        );
+
+        if value lt nx3 then
+            low := middle + 1;
+        elif value gt nx3 then
+            high := middle - 1;
+        else
+            return middle;
+        end if;
+    end while;
+
+    error "FP4NCFindState: x3 is absent from its x2 block";
+end function;
+
+///////////////////////////////////////////////////////////////////////////
+// Human-readable summary
+///////////////////////////////////////////////////////////////////////////
+
+procedure PrintEnumeration(table)
+    printf "Numbered cached four-point enumeration\n";
+    printf "Straight Inner Nielsen Classes = %o\n", table`StateCount;
+    printf "X2 Options = %o\n", table`X2PassportCount;
+    printf "Nonempty x2 blocks = %o\n", table`NonemptyX2Blocks;
+    printf "Packed x3 chunks = %o (chunk size %o)\n",
+        #table`X3Chunks, table`ChunkSize;
+end procedure;

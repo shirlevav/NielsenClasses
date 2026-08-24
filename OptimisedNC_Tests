@@ -1,0 +1,31 @@
+load "OptimisedNC";
+load m23;
+
+classes := Classes(G);
+
+// 3A 3A 3A 2A
+print "\nClass tuple: 3A 3A 3A 2A \n";
+tuple:= [classes[3][3], classes[3][3], classes[3][3], classes[2][3]];
+
+t := Cputime();
+NielsenClass3A3A3A2A := EnumerateNC(G, tuple : ChunkSize := 250, ProgressInterval := 0, VerifyStates := false);
+
+printf "3A3A3A2A runtime in CPU seconds: %o \n", Cputime(t);
+
+// 3A 3A 3A 3A
+print "\nClass tuple: 3A 3A 3A 3A \n";
+tuple:= [classes[3][3], classes[3][3], classes[3][3], classes[3][3]];
+
+t := Cputime();
+NielsenClass3A3A3A3A := EnumerateNC(G, tuple : ChunkSize := 25000, ProgressInterval := 0, VerifyStates := false);
+
+printf "3A3A3A3A runtime in CPU seconds: %o \n", Cputime(t);
+
+// 6A 6A 2A 2A
+print "\nClass tuple: 6A 6A 2A 2A \n";
+tuple:= [classes[6][3], classes[6][3], classes[2][3], classes[2][3]];
+
+t := Cputime();
+NielsenClass6A6A2A2A := EnumerateNC(G, tuple : ChunkSize := 250000, ProgressInterval := 0, VerifyStates := false);
+
+printf "6A6A2A2A runtime in CPU seconds: %o \n", Cputime(t);
