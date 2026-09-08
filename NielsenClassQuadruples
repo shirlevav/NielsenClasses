@@ -1,0 +1,270 @@
+// Computing straight Nielsen classes for tuples of length 4
+
+// Basic functions
+
+// Get the product of the entries of a tuple.
+function TupleProduct(G, t)
+    p := Id(G);
+    for x in t do
+        p := p*x;
+    end for;
+    return p;
+end function;
+
+// Check whether the tuple has product one.
+function ProductOneCheck(G, t)
+    return TupleProduct(G, t) eq Id(G);
+end function;
+
+// Check whether the entries generate G.
+function TupleGenerating(G, t)
+    return #sub< G | t > eq #G;
+end function;
+
+// Total number of cycles of a permutation.
+function CycleCount(perm)
+    return &+[ item[2] : item in CycleStructure(perm) ];
+end function;
+
+// Genus of the associated degree-n cover from the branch cycles.
+function GenusOfCover(t)
+    n := Degree(Parent(t[1]));
+    sumofind := &+[ n - CycleCount(g) : g in t ];
+    assert sumofind mod 2 eq 0;
+    return 1 - n + (sumofind div 2);
+end function;
+
+// Numbered storage of x3 elements
+procedure AppendX3(~vectors, vecspace, F, VSize, ~length, value)
+    length +:= 1;
+
+    index := ((length - 1) div VSize) + 1; // vector number
+    position := ((length - 1) mod VSize) + 1; // position within the vector
+
+    if index gt #vectors then
+        Append(~vectors, vecspace ! 0); // if we need a new storage vector
+    end if;
+
+    vectors[index][position] := F ! value;
+end procedure;
+
+// Output record
+
+OutputRecord := recformat<
+    G, ClassReps, X3Vectors, X2Numbers, Offsets, Numbering, StorageField, VSize, StateCount
+>;
+
+// Main enumeration
+
+// Input:
+//   G          finite permutation group;
+//   tuple      [c1,c2,c3,c4], representatives of prescribed G-classes.
+//
+// Parameters:
+//   VSize         	number of stored x3 identifiers per vector;
+//   ProgressInterval   print progress;
+
+//
+function NielsenClassQuadruples(
+    G, tuple :
+    VSize := 250000,
+    ProgressInterval := 1000
+)
+// Input checks
+	if #tuple ne 4 then
+        error "Need a tuple of length 4.";
+	end if;
+
+    if VSize le 0 then
+        error "Size of storage vectors must be positive.";
+    end if;
+	
+// Build the BSGS before NumberingMap
+    BSGS(G);
+    numbering := NumberingMap(G);
+
+// Fixed class data
+    class_map := ClassMap(G);
+
+    c1 := G ! tuple[1];
+    c2 := G ! tuple[2];
+    c3 := G ! tuple[3];
+    c4 := G ! tuple[4];
+
+    c3_index := class_map(c3);
+    c4_index := class_map(c4);
+
+    H  := Centralizer(G, c1);
+    H2 := Centralizer(G, c2);
+    H3 := Centralizer(G, c3);
+
+    BSGS(H);
+    BSGS(H2);
+    BSGS(H3);
+	
+// Enumerating x2
+    HgH2_reps := DoubleCosetRepresentatives(G, H, H2);
+
+	x2_candidates := [ Integers() | numbering(c2^(r^-1)) : r in HgH2_reps];
+
+    Sort(~x2_candidates);
+    x2_count := #x2_candidates;
+    delete HgH2_reps;
+	
+// Enumerating x3
+// X2Numbers[b] is the x2 identifier of nonempty block b.
+// Offsets has length #X2Numbers+1 and starts at 0.  The states in
+// block b have IDs
+//
+//          Offsets[b]+1, ..., Offsets[b+1].
+
+    storage_prime := NextPrime(#G + 1); // Store each number in F_q
+    Fstore := GF(storage_prime);
+    vecspace := VectorSpace(Fstore, VSize);
+
+    x3_vectors := [];
+    x2_numbers := [ Integers() | ];
+    offsets := [ Integers() | 0 ];
+
+    total_states := 0;
+    max_block_size := 0;
+	
+// The fibre cache is indexed by the conjugacy-class number of p=c1*x2.
+// Each cache value is the tuple < d, L, valid_orbits >, where
+//      d = stored representative of p^G,
+//      L = C_G(d),
+//      valid_orbits is a Magma list of pairs <numbering(y), C_L(y)> one for every valid L-orbit in C3
+
+    fibre_cache := AssociativeArray(Integers());
+
+    printf "Enumerating four-point inner Nielsen classes...\n";
+    printf "x2 options = %o\n", x2_count;
+	
+// Main loop
+    for x2_counter in [1..x2_count] do
+        nx2 := x2_candidates[x2_counter];
+        x2 := nx2 @@ numbering; // Transports it back to its element
+
+        c1x2generates := TupleGenerating(G, [ c1, x2 ]); // Check if generating pair, saves computation later if so
+
+        K := Centralizer(H, x2);
+        BSGS(K);
+
+		// Partial product and its G-conjugacy class
+		p := c1*x2;
+        p_index := class_map(p);
+
+        if IsDefined(fibre_cache, p_index) then // Check if data already exists
+            fibre_data := fibre_cache[p_index];
+        else
+            d := ClassRepresentative(G, p_index); // Magma's stored representative of the product class.
+
+            // Because d is the stored class representative, use the class centralizer.
+            L := ClassCentralizer(G, p_index);
+            BSGS(L);
+
+            // Since L=C_G(d), membership of (d*y)^-1 in C4 is constant on the whole L-orbit. 
+            LgH3_reps := DoubleCosetRepresentatives(G, L, H3);
+            valid_orbits := [* *];
+
+            for g in LgH3_reps do
+                y := c3^(g^-1); // Test one y per L-orbit
+                if class_map((d*y)^-1) eq c4_index then
+                    // S depends only on this L-orbit, so cache it.
+                    S := Centralizer(L, y);
+                    BSGS(S);
+                    Append(~valid_orbits, < numbering(y), S >);
+                end if;
+            end for;
+            delete LgH3_reps;
+
+            fibre_data := < d, L, valid_orbits >;
+            fibre_cache[p_index] := fibre_data;
+        end if;
+
+        // Unpack the cached data.
+
+        d := fibre_data[1];
+        L := fibre_data[2];
+        valid_orbits := fibre_data[3];
+
+        // Transport p to d.
+
+        flag, h := IsConjugate(G, p, d : LeftSubgroup := K, RightSubgroup := L);
+		assert flag;
+        assert p^h eq d;
+		Kd := sub< L | [ k^h : k in Generators(K) ] >;
+        BSGS(Kd);
+
+        h_inverse := h^-1;
+        block_numbers := [ Integers() | ];
+
+        // Refine every valid L-orbit into Kd-orbits
+        for orbit_data in valid_orbits do
+            number_y := orbit_data[1];
+            S := orbit_data[2];
+
+            y := number_y @@ numbering;
+            KdlS_reps := DoubleCosetRepresentatives(L, Kd, S);
+
+            for r in KdlS_reps do
+                z := y^(r^-1);
+                x3 := z^h_inverse;
+                keep := c1x2generates; // First check if pair generates
+
+                if not keep then
+                    keep := TupleGenerating(G, [ c1, x2, x3 ]); // If pair does not generate, check if the full triple does
+                end if;
+				
+				if keep then
+                    nx3 := numbering(x3);
+                    Append(~block_numbers, nx3);
+				end if;
+            end for;
+			delete KdlS_reps;
+        end for;
+		
+        // Keep only nonempty x2 blocks. 
+        if #block_numbers gt 0 then
+            Sort(~block_numbers);
+            Append(~x2_numbers, nx2);
+			for nx3 in block_numbers do
+                AppendX3(~x3_vectors, vecspace, Fstore, VSize, ~total_states, nx3);
+            end for;
+
+            Append(~offsets, total_states);
+            max_block_size := Max(max_block_size, #block_numbers);
+        end if;
+
+        // Progress report
+        if ProgressInterval gt 0 and
+           x2_counter mod ProgressInterval eq 0 then
+            printf "x2 checked=%o/%o, elements found=%o, memory used=%o MB\n",
+                x2_counter,
+				x2_count,
+                total_states,
+                GetMemoryUsage() div 1048576;
+        end if;
+    end for;
+
+    printf "\nEnumeration complete:\n";
+    printf "straight inner Nielsen class size = %o\n", total_states;
+    delete fibre_cache;
+
+    return rec< OutputRecord |
+        G := G,
+        ClassReps := [ G | c1,c2,c3,c4 ],
+		X3Vectors := x3_vectors,
+		X2Numbers := x2_numbers,
+		Offsets := offsets,
+        Numbering := numbering,
+        StorageField := Fstore,
+        VSize := VSize,
+        StateCount := total_states
+    >;
+end function;
+
+// Summary of results
+procedure PrintEnumeration(table)
+    printf "straight inner Nielsen class size = %o\n", table`StateCount;
+end procedure;

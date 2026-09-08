@@ -1,0 +1,135 @@
+// Computing straight Nielsen classes for tuples of length 3
+
+// Basic functions 
+
+// Get the product of the entries of a tuple.
+function TupleProduct(G, t)
+    p := Id(G);
+    for x in t do
+        p := p*x;
+    end for;
+    return p;
+end function;
+
+// Check whether the tuple has product one.
+function ProductOneCheck(G, t)
+    return TupleProduct(G, t) eq Id(G);
+end function;
+
+// Check whether the entries generate G.
+function TupleGenerating(G, t)
+    return #sub< G | t > eq #G;
+end function;
+
+// Total number of cycles of a permutation.
+function CycleCount(perm)
+    return &+[ item[2] : item in CycleStructure(perm) ];
+end function;
+
+// Genus of the associated degree-n cover from the branch cycles.
+function GenusOfCover(t)
+    n := Degree(Parent(t[1]));
+    sumofind := &+[ n - CycleCount(g) : g in t ];
+    assert sumofind mod 2 eq 0;
+    return 1 - n + (sumofind div 2);
+end function;
+
+// Output record
+OutputRecord := recformat<
+    G, ClassReps, Numbering, X2Numbers, StateCount, X2Count
+>;
+
+// Simpler than 4 code: every x2 determines exactly one possible x3, no need for storage vectors.
+function NielsenClassTriples(
+    G, tuple :
+    ProgressInterval := 1000
+)
+// Input checks
+    if #tuple ne 3 then
+        error "Need a tuple of length 3.";
+    end if;
+
+// Build the BSGS before NumberingMap
+    BSGS(G);
+    numbering := NumberingMap(G);
+
+// Fixed class data
+    class_map := ClassMap(G);
+
+    c1 := G ! tuple[1];
+    c2 := G ! tuple[2];
+    c3 := G ! tuple[3];
+    c3_index := class_map(c3);
+
+    H := Centralizer(G, c1);
+    H2 := Centralizer(G, c2);
+    BSGS(H);
+    BSGS(H2);
+
+// Enumerating x2
+    reps := DoubleCosetRepresentatives(G, H, H2);
+	
+    x2_candidates := [ Integers() | numbering(c2^(r^-1)) : r in reps];
+	
+    Sort(~x2_candidates);
+    x2_count := #x2_candidates;
+	delete reps;
+	
+    x2_numbers := [ Integers() | ];
+
+    printf "Enumerating three-point inner Nielsen classes...\n";
+    printf "x2 options = %o\n", x2_count;
+
+    for i in [1..x2_count] do
+        nx2 := x2_candidates[i];
+        x2 := nx2 @@ numbering;
+        x3 := (c1*x2)^-1;
+
+        if class_map(x3) eq c3_index and TupleGenerating(G, [ c1, x2 ]) then
+            Append(~x2_numbers, nx2);
+		end if;
+
+        if ProgressInterval gt 0 and i mod ProgressInterval eq 0 then
+            printf "x2 checked=%o/%o, elements found=%o, memory used=%o MB\n",
+                i,
+				x2_count,
+                #x2_numbers,
+                GetMemoryUsage() div 1048576;
+        end if;
+    end for;
+
+    printf "\nEnumeration complete:\n";
+    printf "straight inner Nielsen class size = %o\n", #x2_numbers;
+
+    return rec< OutputRecord |
+        G := G,
+        ClassReps := [ G | c1, c2, c3 ],
+        Numbering := numbering,
+        X2Numbers := x2_numbers,
+        StateCount := #x2_numbers
+    >;
+end function;
+
+// Recover x2,x3 for a state ID
+function StatePair(table, state_id)
+
+    if state_id lt 1 or state_id gt table`StateCount then
+        error "State ID out of range";
+    end if;
+
+    numbering := table`Numbering;
+    x2 := table`X2Numbers[state_id] @@ numbering;
+    x3 := (table`ClassReps[1]*x2)^-1;
+    return x2, x3;
+end function;
+
+// Recover the complete triple [c1,x2,(c1*x2)^-1]
+function StateTuple(table, state_id)
+    x2, x3 := StatePair(table, state_id);
+    return [table`ClassReps[1], x2, x3];
+end function;
+
+procedure PrintEnumeration(table)
+    printf "straight inner Nielsen class size = %o\n", table`StateCount;
+end procedure;
+
