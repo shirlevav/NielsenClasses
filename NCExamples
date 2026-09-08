@@ -1,0 +1,90 @@
+load "NielsenClassTriples";
+load "NielsenClassQuadruples";
+
+load m23;
+
+classes := Classes(G);
+
+print "\nM23\n";
+print "\nEnumerating some triples:\n";
+// 8A 8A 2A
+print "\nClass tuple: 8A 8A 2A \n";
+tuple:= [classes[9][3], classes[9][3], classes[2][3]];
+
+t := Cputime();
+NielsenClass8A8A2A := NielsenClassTriples(G, tuple : ProgressInterval := 0);
+
+printf "8A8A2A runtime in CPU seconds: %o \n", Cputime(t);
+
+// 2A 23A 23B
+print "\nClass tuple: 2A 23A 23B \n";
+tuple:= [classes[2][3], classes[16][3], classes[17][3]];
+
+t := Cputime();
+NielsenClass2A23A23B := NielsenClassTriples(G, tuple : ProgressInterval := 0);
+
+printf "2A23A23B runtime in CPU seconds: %o \n", Cputime(t);
+
+
+
+print "\nEnumerating some quadruples:\n";
+// 3A 3A 3A 2A
+print "\nClass tuple: 3A 3A 3A 2A \n";
+tuple:= [classes[3][3], classes[3][3], classes[3][3], classes[2][3]];
+
+t := Cputime();
+NielsenClass3A3A3A2A := NielsenClassQuadruples(G, tuple : VSize := 250, ProgressInterval := 0);
+
+printf "3A3A3A2A runtime in CPU seconds: %o \n", Cputime(t);
+
+// 3A 3A 3A 3A
+print "\nClass tuple: 3A 3A 3A 3A \n";
+tuple:= [classes[3][3], classes[3][3], classes[3][3], classes[3][3]];
+
+t := Cputime();
+NielsenClass3A3A3A3A := NielsenClassQuadruples(G, tuple : VSize := 25000, ProgressInterval := 0);
+
+printf "3A3A3A3A runtime in CPU seconds: %o \n", Cputime(t);
+
+// 6A 6A 2A 2A
+print "\nClass tuple: 6A 6A 2A 2A \n";
+tuple:= [classes[6][3], classes[6][3], classes[2][3], classes[2][3]];
+
+t := Cputime();
+NielsenClass6A6A2A2A := NielsenClassQuadruples(G, tuple : VSize := 250000, ProgressInterval := 0);
+
+printf "6A6A2A2A runtime in CPU seconds: %o \n", Cputime(t);
+
+load m24;
+
+classes := Classes(G);
+
+print "\nM24\n";
+print "\nEnumerating some triples:\n";
+// 2B 12B 12B
+print "\nClass tuple: 2B 12B 12B \n";
+tuple:= [classes[3][3], classes[18][3], classes[18][3]];
+
+t := Cputime();
+NielsenClass2B12B12B := NielsenClassTriples(G, tuple : ProgressInterval := 0);
+
+printf "2B12B12B runtime in CPU seconds: %o \n", Cputime(t);
+
+print "\nEnumerating some quadruples:\n";
+// 2A 2A 2A 12B
+print "\nClass tuple: 2A 2A 2A 12B \n";
+tuple:= [classes[2][3], classes[2][3], classes[2][3], classes[18][3]];
+
+t := Cputime();
+NielsenClass2A2A2A12B := NielsenClassQuadruples(G, tuple : VSize := 250, ProgressInterval := 0);
+
+printf "2A2A2A12B runtime in CPU seconds: %o \n", Cputime(t);
+
+// 2B 2B 2B 12B
+print "\nClass tuple: 2B 2B 2B 12B \n";
+tuple:= [classes[3][3], classes[3][3], classes[3][3], classes[18][3]];
+
+t := Cputime();
+NielsenClass2B2B2B12B := NielsenClassQuadruples(G, tuple : VSize := 25000, ProgressInterval := 0);
+
+printf "2B2B2B12B runtime in CPU seconds: %o \n", Cputime(t);
